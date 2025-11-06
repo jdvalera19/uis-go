@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # Servicio de Chat (Node.js)
+  chat_service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chat_service
+    restart: unless-stopped
+    env_file: ./backend/.env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend:/usr/src/app
+      - /usr/src/app/node_modules
+    networks:
+      - app-network
+    depends_on:
+      - mongo
+
+  # Web Service (FastAPI)
+  web_service:
+    build:
+      context: ../uis-go-web-service  # Apunta al directorio del web service
+      dockerfile: Dockerfile
+    container_name: web_service
+    restart: unless-stopped
+    env_file: ../uis-go-web-service/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../uis-go-web-service:/app
+    networks:
+      - app-network
+    depends_on:
+      - postgres
+
+  # Base de datos MongoDB
+  mongo:
+    image: mongo:6.0
+    container_name: mongo_db
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - app-network
+
+  # Base de datos PostgreSQL
+  postgres:
+    image: postgres:15
+    container_name: postgres_db
+    restart: unless-stopped
+    env_file: ../uis-go-web-service/.env.db # Archivo separado para credenciales de BD
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mongo-data:
+    driver: local
+  postgres-data:
+    driver: local

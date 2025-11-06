@@ -8,6 +8,10 @@ const { OpenAI } = require('openai');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const dotenv = require('dotenv');
+const mongoose = require('mongoose');
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,6 +20,40 @@ const PORT = process.env.PORT || 3000;
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Conexión a MongoDB
+mongoose.connect(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('Conectado a MongoDB'))
+.catch(err => console.error('Error al conectar a MongoDB:', err));
+
+// Modelos de MongoDB (reemplazando la base de datos en memoria)
+const UserSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  name: { type: String, required: true },
+  credits: { type: Number, default: 100 },
+  level: { type: Number, default: 1 },
+  experience: { type: Number, default: 0 },
+  points: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+});
+const User = mongoose.model('User', UserSchema);
+
+const MessageSchema = new mongoose.Schema({
+  text: String,
+  user: {
+    _id: { type: String, required: true },
+    name: String,
+  },
+  createdAt: { type: Date, default: Date.now },
+  image: String,
+  audio: String,
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Referencia al usuario real
+});
+const Message = mongoose.model('Message', MessageSchema);
 
 // Middleware
 app.use(helmet());
@@ -30,6 +68,9 @@ const limiter = rateLimit({
   message: 'Demasiadas solicitudes desde esta IP, intenta de nuevo más tarde.',
 });
 app.use('/api/', limiter);
+
+// Servir archivos estáticos de la carpeta uploads
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Configuración de multer para subida de archivos
 const storage = multer.diskStorage({
@@ -47,15 +88,6 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Base de datos en memoria (en producción usar MongoDB/PostgreSQL)
-let users = [];
-let messages = [];
-let activities = [];
-let achievements = [];
-let questions = [];
-let questionResponses = [];
-let userInsights = [];
-
 // Middleware de autenticación
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -65,11 +97,11 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: 'Token de acceso requerido' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'secret', (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET || 'secret', (err, userPayload) => {
     if (err) {
       return res.status(403).json({ error: 'Token inválido' });
     }
-    req.user = user;
+    req.user = userPayload; // El payload del token contiene userId y email
     next();
   });
 };
@@ -88,8 +120,8 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
     }
 
-    // Verificar si el usuario ya existe
-    const existingUser = users.find(user => user.email === email);
+    // Verificar si el usuario ya existe en la BD
+    const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ error: 'El usuario ya existe' });
     }
@@ -97,31 +129,26 @@ app.post('/api/auth/register', async (req, res) => {
     // Hash de la contraseña
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Crear usuario
-    const newUser = {
-      id: Date.now().toString(),
+    // Crear usuario en la BD
+    const newUser = new User({
       email,
       password: hashedPassword,
       name,
-      credits: 100, // Créditos iniciales
-      level: 1,
-      experience: 0,
-      points: 0,
-      createdAt: new Date().toISOString(),
-    };
-
-    users.push(newUser);
+      // Los valores por defecto se definen en el Schema
+    });
+    
+    await newUser.save();
 
     // Generar token
     const token = jwt.sign(
-      { userId: newUser.id, email: newUser.email },
+      { userId: newUser._id, email: newUser.email },
       process.env.JWT_SECRET || 'secret',
       { expiresIn: '7d' }
     );
 
     res.status(201).json({
       user: {
-        id: newUser.id,
+        id: newUser._id,
         email: newUser.email,
         name: newUser.name,
         credits: newUser.credits,
@@ -144,7 +171,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email y contraseña son requeridos' });
     }
 
-    const user = users.find(user => user.email === email);
+    const user = await User.findOne({ email });
     if (!user) {
       return res.status(401).json({ error: 'Credenciales inválidas' });
     }
@@ -155,14 +182,14 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
+      { userId: user._id, email: user.email },
       process.env.JWT_SECRET || 'secret',
       { expiresIn: '7d' }
     );
 
     res.json({
       user: {
-        id: user.id,
+        id: user._id,
         email: user.email,
         name: user.name,
         credits: user.credits,
@@ -191,9 +218,8 @@ app.post('/api/chat/send', authenticateToken, upload.fields([
       return res.status(400).json({ error: 'Mensaje vacío' });
     }
 
-    // Guardar mensaje del usuario
-    const userMessage = {
-      id: Date.now().toString(),
+    // Guardar mensaje del usuario en la BD
+    const userMessage = new Message({
       text: text || '',
       user: {
         _id: req.user.userId,
@@ -202,9 +228,10 @@ app.post('/api/chat/send', authenticateToken, upload.fields([
       createdAt: new Date(),
       image: imageFile ? imageFile.path : undefined,
       audio: audioFile ? audioFile.path : undefined,
-    };
+      userId: req.user.userId
+    });
 
-    messages.push(userMessage);
+    await userMessage.save();
 
     // Procesar con OpenAI
     let prompt = text || 'El usuario ha enviado una imagen o audio.';
@@ -235,30 +262,31 @@ app.post('/api/chat/send', authenticateToken, upload.fields([
 
     const botResponse = completion.choices[0].message.content;
 
-    // Guardar respuesta del bot
-    const botMessage = {
-      id: (Date.now() + 1).toString(),
+    // Guardar respuesta del bot en la BD
+    const botMessage = new Message({
       text: botResponse,
       user: {
         _id: 'bot',
         name: 'ChatBot Estudiantil',
       },
       createdAt: new Date(),
-    };
+      userId: req.user.userId, // Asociar al usuario para filtrar historial
+    });
 
-    messages.push(botMessage);
+    await botMessage.save();
 
     // Otorgar créditos por usar el chat
-    const user = users.find(u => u.id === req.user.userId);
+    const user = await User.findById(req.user.userId);
     if (user) {
       user.credits += 5;
       user.experience += 10;
       user.points += 5;
+      await user.save();
     }
 
     res.json({
       text: botResponse,
-      credits: user.credits,
+      credits: user ? user.credits : 0,
     });
   } catch (error) {
     console.error('Error en chat:', error);
@@ -266,26 +294,37 @@ app.post('/api/chat/send', authenticateToken, upload.fields([
   }
 });
 
-app.get('/api/chat/history', authenticateToken, (req, res) => {
-  const userMessages = messages.filter(msg => 
-    msg.user._id === req.user.userId || msg.user._id === 'bot'
-  );
-  res.json(userMessages);
+app.get('/api/chat/history', authenticateToken, async (req, res) => {
+  try {
+    const userMessages = await Message.find({
+        $or: [
+            { 'user._id': req.user.userId },
+            { 'user._id': 'bot', userId: req.user.userId }
+        ]
+    }).sort({ createdAt: 'asc' });
+    res.json(userMessages);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener el historial' });
+  }
 });
 
 // Rutas de gamificación
-app.get('/api/gamification/stats', authenticateToken, (req, res) => {
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) {
-    return res.status(404).json({ error: 'Usuario no encontrado' });
+app.get('/api/gamification/stats', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+  
+    res.json({
+      credits: user.credits,
+      level: user.level,
+      experience: user.experience,
+      points: user.points,
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
-
-  res.json({
-    credits: user.credits,
-    level: user.level,
-    experience: user.experience,
-    points: user.points,
-  });
 });
 
 app.get('/api/gamification/activities', (req, res) => {
@@ -322,20 +361,25 @@ app.get('/api/gamification/activities', (req, res) => {
   res.json(sampleActivities);
 });
 
-app.post('/api/gamification/complete-activity', authenticateToken, (req, res) => {
+app.post('/api/gamification/complete-activity', authenticateToken, async (req, res) => {
   const { activityId } = req.body;
-  const user = users.find(u => u.id === req.user.userId);
   
-  if (!user) {
-    return res.status(404).json({ error: 'Usuario no encontrado' });
+  try {
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+  
+    // Simular completar actividad
+    user.credits += 50;
+    user.experience += 100;
+    user.points += 50;
+    await user.save();
+  
+    res.json({ success: true, credits: user.credits });
+  } catch (error) {
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
-
-  // Simular completar actividad
-  user.credits += 50;
-  user.experience += 100;
-  user.points += 50;
-
-  res.json({ success: true, credits: user.credits });
 });
 
 app.get('/api/gamification/achievements', (req, res) => {
@@ -369,19 +413,24 @@ app.get('/api/gamification/achievements', (req, res) => {
   res.json(sampleAchievements);
 });
 
-app.get('/api/gamification/leaderboard', (req, res) => {
-  const leaderboard = users
-    .sort((a, b) => b.points - a.points)
-    .slice(0, 10)
-    .map((user, index) => ({
-      id: user.id,
-      name: user.name,
-      points: user.points,
-      level: user.level,
-      position: index + 1,
+app.get('/api/gamification/leaderboard', async (req, res) => {
+  try {
+    const topUsers = await User.find({})
+      .sort({ points: -1 })
+      .limit(10);
+      
+    const leaderboard = topUsers.map((user, index) => ({
+        id: user._id,
+        name: user.name,
+        points: user.points,
+        level: user.level,
+        position: index + 1,
     }));
-
-  res.json(leaderboard);
+  
+    res.json(leaderboard);
+  } catch (error) {
+    res.status(500).json({ error: 'Error al obtener el leaderboard' });
+  }
 });
 
 // Rutas del sistema de preguntas

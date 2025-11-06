@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Estudiantil ChatBot",
+    "name": "estudiantil-chatbot",
     "slug": "estudiantil-chatbot",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -9,13 +9,16 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.estudiantil.chatbot"
+      "supportsTablet": true
     },
     "android": {
-      "package": "com.estudiantil.chatbot"
+      "package": "com.andrescast98.estudiantilchatbot"
     },
-    "sdkVersion": "54.0.0"
+    "web": {},
+    "extra": {
+      "eas": {
+        "projectId": "5ca3b794-865c-4fc0-a066-5d98d17cd44e"
+      }
+    }
   }
 }
-
