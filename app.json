@@ -12,7 +12,8 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.andrescast98.estudiantilchatbot"
+      "package": "com.andrescast98.estudiantilchatbot",
+      "usesCleartextTraffic": true
     },
     "web": {},
     "extra": {
